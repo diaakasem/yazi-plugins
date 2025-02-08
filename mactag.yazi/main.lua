@@ -1,3 +1,5 @@
+--- @since 25.2.7
+
 local update = ya.sync(function(st, tags)
 	for path, tag in pairs(tags) do
 		st.tags[path] = #tag > 0 and tag or nil
@@ -35,10 +37,7 @@ local function setup(st, opts)
 	end, 500)
 end
 
-local function fetch(self, job)
-	-- TODO: remove this once Yazi 0.4 is released
-	job = job or self
-
+local function fetch(_, job)
 	local paths = {}
 	for _, file in ipairs(job.files) do
 		paths[#paths + 1] = tostring(file.url)
@@ -46,7 +45,7 @@ local function fetch(self, job)
 
 	local output, err = Command("tag"):args(paths):stdout(Command.PIPED):output()
 	if not output then
-		return ya.err("Cannot spawn tag command, error code " .. tostring(err))
+		return true, Err("Cannot spawn `tag` command, error: %s", err)
 	end
 
 	local i, tags = 1, {}
@@ -64,7 +63,7 @@ local function fetch(self, job)
 	end
 
 	update(tags)
-	return 1
+	return true
 end
 
 local cands = ya.sync(function(st)
@@ -76,10 +75,7 @@ local cands = ya.sync(function(st)
 end)
 
 local function entry(self, job)
-	-- TODO: remove this once Yazi 0.4 is released
-	local args = job.args or job
-
-	assert(args[1] == "add" or args[1] == "remove", "Invalid action")
+	assert(job.args[1] == "add" or job.args[1] == "remove", "Invalid action")
 	ya.manager_emit("escape", { visual = true })
 
 	local cands = cands()
@@ -88,7 +84,7 @@ local function entry(self, job)
 		return
 	end
 
-	local t = { args[1] == "remove" and "-r" or "-a", cands[choice].desc }
+	local t = { job.args[1] == "remove" and "-r" or "-a", cands[choice].desc }
 	local files = {}
 	for _, url in ipairs(selected_or_hovered()) do
 		t[#t + 1] = tostring(url)
