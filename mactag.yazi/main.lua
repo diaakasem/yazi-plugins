@@ -1,4 +1,4 @@
---- @since 25.2.7
+--- @since 25.4.4
 
 local update = ya.sync(function(st, tags)
 	for path, tag in pairs(tags) do
@@ -27,7 +27,7 @@ local function setup(st, opts)
 		local url = tostring(self._file.url)
 		local spans = {}
 		for _, tag in ipairs(st.tags[url] or {}) do
-			if self._file:is_hovered() then
+			if self._file.is_hovered then
 				spans[#spans + 1] = ui.Span(" ●"):bg(st.colors[tag] or "reset")
 			else
 				spans[#spans + 1] = ui.Span(" ●"):fg(st.colors[tag] or "reset")
@@ -76,7 +76,7 @@ end)
 
 local function entry(self, job)
 	assert(job.args[1] == "add" or job.args[1] == "remove", "Invalid action")
-	ya.manager_emit("escape", { visual = true })
+	ya.mgr_emit("escape", { visual = true })
 
 	local cands = cands()
 	local choice = ya.which { cands = cands }
