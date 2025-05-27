@@ -1,23 +1,27 @@
 local M = {}
 
 function M:peek(job)
-	local command = " gsed 's/^# //g' '" .. tostring(job.file.url) .. "' | mdcat  "
-	local child = Command("nu")
+	local args = job.args
+	local child = Command("bat")
 			:args({
-				"-c",
-				command
+				"-f",
+				"--plain",
+				tostring(job.file.url),
 			})
-			:env("CLICOLOR_FORCE", "1")
 			:stdout(Command.PIPED)
 			:stderr(Command.PIPED)
 			:spawn()
+
+	if not child then
+		return job:fallback_to_builtin()
+	end
 
 	local limit = job.area.h
 	local i, lines = 0, ""
 	repeat
 		local next, event = child:read_line()
 		if event == 1 then
-			ya.err(tostring(event))
+			return job:fallback_to_builtin()
 		elseif event ~= 0 then
 			break
 		end
@@ -32,11 +36,7 @@ function M:peek(job)
 	if job.skip > 0 and i < job.skip + limit then
 		ya.mgr_emit(
 			"peek",
-			{
-				math.max(0, i - limit),
-				only_if = job.file.url,
-				upper_bound = true
-			}
+			{ math.max(0, i - limit), only_if = job.file.url, upper_bound = true }
 		)
 	else
 		lines = lines:gsub("\t", string.rep(" ", rt.preview.tab_size or PREVIEW.tab_size or 4))
@@ -51,6 +51,17 @@ function M:seek(job)
 		ya.mgr_emit("peek", {
 			math.max(0, cx.active.preview.skip + step),
 			only_if = job.file.url,
+		})
+	end
+end
+
+function M:fallback_to_builtin()
+	local err, bound = ya.preview_code(job)
+	if bound then
+		ya.mgr_emit("peek", { bound, only_if = job.file.url, upper_bound = true })
+	elseif err and not err:find("cancelled", 1, true) then
+		ya.preview_widgets(job, {
+			ui.Text(job.area, { ui.Line(err):reverse() }),
 		})
 	end
 end
