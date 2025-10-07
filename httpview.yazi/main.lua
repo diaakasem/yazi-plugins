@@ -3,10 +3,8 @@ local M = {}
 function M:peek(job)
 	local command = " gsed 's/^# //g' '" .. tostring(job.file.url) .. "' | mdcat  "
 	local child = Command("nu")
-			:args({
-				"-c",
-				command
-			})
+			:arg("-c")
+			:arg(command)
 			:env("CLICOLOR_FORCE", "1")
 			:stdout(Command.PIPED)
 			:stderr(Command.PIPED)

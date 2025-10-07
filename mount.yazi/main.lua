@@ -233,7 +233,11 @@ function M.fillin(tbl)
 		return tbl
 	end
 
-	local output, err = Command("lsblk"):args({ "-p", "-o", "name,fstype", "-J" }):args(sources):output()
+	local cmd = Command("lsblk"):arg("-p"):arg("-o"):arg("name,fstype"):arg("-J")
+	for _, source in ipairs(sources) do
+		cmd = cmd:arg(source)
+	end
+	local output, err = cmd:output()
 	if err then
 		ya.dbg("Failed to fetch filesystem types for unmounted partitions: " .. err)
 		return tbl
@@ -256,14 +260,14 @@ function M.operate(type)
 
 	local output, err
 	if ya.target_os() == "macos" then
-		output, err = Command("diskutil"):args({ type, active.src }):output()
+		output, err = Command("diskutil"):arg(type):arg(active.src):output()
 	end
 	if ya.target_os() == "linux" then
 		if type == "eject" then
-			Command("udisksctl"):args({ "unmount", "-b", active.src }):status()
-			output, err = Command("udisksctl"):args({ "power-off", "-b", active.src }):output()
+			Command("udisksctl"):arg("unmount"):arg("-b"):arg(active.src):status()
+			output, err = Command("udisksctl"):arg("power-off"):arg("-b"):arg(active.src):output()
 		else
-			output, err = Command("udisksctl"):args({ type, "-b", active.src }):output()
+			output, err = Command("udisksctl"):arg(type):arg("-b"):arg(active.src):output()
 		end
 	end
 

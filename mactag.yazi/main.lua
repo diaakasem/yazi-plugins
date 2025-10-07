@@ -43,7 +43,11 @@ local function fetch(_, job)
 		paths[#paths + 1] = tostring(file.url)
 	end
 
-	local output, err = Command("tag"):args(paths):stdout(Command.PIPED):output()
+	local cmd = Command("tag")
+	for _, path in ipairs(paths) do
+		cmd = cmd:arg(path)
+	end
+	local output, err = cmd:stdout(Command.PIPED):output()
 	if not output then
 		return true, Err("Cannot spawn `tag` command, error: %s", err)
 	end
@@ -91,7 +95,11 @@ local function entry(self, job)
 		files[#files + 1] = { url = url }
 	end
 
-	local status = Command("tag"):args(t):status()
+	local cmd = Command("tag")
+	for _, arg in ipairs(t) do
+		cmd = cmd:arg(arg)
+	end
+	local status = cmd:status()
 	if status.success then
 		fetch(self, { files = files })
 	end

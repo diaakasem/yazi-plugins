@@ -3,11 +3,9 @@ local M = {}
 function M:peek(job)
 	local args = job.args
 	local child = Command("bat")
-			:args({
-				"-f",
-				"--plain",
-				tostring(job.file.url),
-			})
+			:arg("-f")
+			:arg("--plain")
+			:arg(tostring(job.file.url))
 			:stdout(Command.PIPED)
 			:stderr(Command.PIPED)
 			:spawn()

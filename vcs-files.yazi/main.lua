@@ -6,7 +6,7 @@ local function fail(content) return ya.notify { title = "VCS Files", content = c
 
 local function entry()
 	local root = root()
-	local output, err = Command("git"):cwd(tostring(root)):args({ "diff", "--name-only", "HEAD" }):output()
+	local output, err = Command("git"):cwd(tostring(root)):arg("diff"):arg("--name-only"):arg("HEAD"):output()
 	if err then
 		return fail("Failed to run `git diff`, error: " .. err)
 	elseif not output.status.success then

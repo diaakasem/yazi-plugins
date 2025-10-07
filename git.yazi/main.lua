@@ -188,12 +188,20 @@ local function fetch(_, job)
 	end
 
 	-- stylua: ignore
-	local output, err = Command("git")
+	local cmd = Command("git")
 		:cwd(tostring(cwd))
-		:args({ "--no-optional-locks", "-c", "core.quotePath=", "status", "--porcelain", "-unormal", "--no-renames", "--ignored=matching" })
-		:args(paths)
-		:stdout(Command.PIPED)
-		:output()
+		:arg("--no-optional-locks")
+		:arg("-c")
+		:arg("core.quotePath=")
+		:arg("status")
+		:arg("--porcelain")
+		:arg("-unormal")
+		:arg("--no-renames")
+		:arg("--ignored=matching")
+	for _, path in ipairs(paths) do
+		cmd = cmd:arg(path)
+	end
+	local output, err = cmd:stdout(Command.PIPED):output()
 	if not output then
 		return true, Err("Cannot spawn `git` command, error: %s", err)
 	end

@@ -3,7 +3,7 @@
 --- Verify if `sudo` is already authenticated
 --- @return boolean
 local function sudo_already()
-	local status = Command("sudo"):args({ "--validate", "--non-interactive" }):status()
+	local status = Command("sudo"):arg("--validate"):arg("--non-interactive"):status()
 	assert(status, "Failed to run `sudo --validate --non-interactive`")
 	return status.success
 end
@@ -16,7 +16,10 @@ end
 ---  nil: no error
 ---  1: sudo failed
 local function run_with_sudo(program, args)
-	local cmd = Command("sudo"):args { program, table.unpack(args) }
+	local cmd = Command("sudo"):arg(program)
+	for _, arg in ipairs(args) do
+		cmd = cmd:arg(arg)
+	end
 	if sudo_already() then
 		return cmd:output()
 	end
