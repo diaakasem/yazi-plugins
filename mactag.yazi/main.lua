@@ -1,10 +1,15 @@
---- @since 25.4.4
+--- @since 25.5.31
 
 local update = ya.sync(function(st, tags)
 	for path, tag in pairs(tags) do
 		st.tags[path] = #tag > 0 and tag or nil
 	end
-	ya.render()
+	-- TODO: remove this
+	if ui.render then
+		ui.render()
+	else
+		ya.render()
+	end
 end)
 
 local selected_or_hovered = ya.sync(function()
@@ -43,11 +48,7 @@ local function fetch(_, job)
 		paths[#paths + 1] = tostring(file.url)
 	end
 
-	local cmd = Command("tag")
-	for _, path in ipairs(paths) do
-		cmd = cmd:arg(path)
-	end
-	local output, err = cmd:stdout(Command.PIPED):output()
+	local output, err = Command("tag"):arg(paths):stdout(Command.PIPED):output()
 	if not output then
 		return true, Err("Cannot spawn `tag` command, error: %s", err)
 	end
@@ -80,7 +81,7 @@ end)
 
 local function entry(self, job)
 	assert(job.args[1] == "add" or job.args[1] == "remove", "Invalid action")
-	ya.mgr_emit("escape", { visual = true })
+	ya.emit("escape", { visual = true })
 
 	local cands = cands()
 	local choice = ya.which { cands = cands }
@@ -95,11 +96,7 @@ local function entry(self, job)
 		files[#files + 1] = { url = url }
 	end
 
-	local cmd = Command("tag")
-	for _, arg in ipairs(t) do
-		cmd = cmd:arg(arg)
-	end
-	local status = cmd:status()
+	local status = Command("tag"):arg(t):status()
 	if status.success then
 		fetch(self, { files = files })
 	end
