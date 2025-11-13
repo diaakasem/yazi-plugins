@@ -16,8 +16,12 @@ local state = {
 }
 
 local function to_string(url)
-	return url and tostring(url) or ""
+    return url and tostring(url) or ""
 end
+
+-- Forward declarations for cross-references
+local build_argline
+local selected_or_hovered_sync
 
 -- Synchronous runner for fallback mode
 local function run_script_sync(script, cwd)
@@ -99,7 +103,7 @@ local function setup(self, opts)
 				apply_update(state.token, active_cwd_sync(), "… loading …")
 			end
     if state.debug then ya.dbg(string.format("custom-status: emit startup update token=%d id=%s", state.token, tostring(self._id))) end
-    local argline = string.format("update %s %s", tostring(state.token), ya.quote(state.script or "", true))
+    local argline = build_argline(state.token, state.script or "", selected_or_hovered_sync())
     ya.emit("plugin", { self._id, argline })
 		else
 			if state.debug then ya.dbg("custom-status: no self._id at setup; skipping initial async emit") end
@@ -134,17 +138,58 @@ local function setup(self, opts)
 						apply_update(state.token, active_cwd_sync(), "… loading …")
 					end
           if state.debug then ya.dbg(string.format("custom-status: cd event → emit token=%d id=%s", state.token, tostring(self._id))) end
-          local argline = string.format("update %s %s", tostring(state.token), ya.quote(state.script or "", true))
+          local argline = build_argline(state.token, state.script or "", selected_or_hovered_sync())
           ya.emit("plugin", { self._id, argline })
 				else
 					if state.debug then ya.dbg("custom-status: cd event but no self._id; skipping async emit") end
 				end
 			end
 		end)
+
+		-- Refresh when hover changes (selection/hover updates arguments)
+		ps.sub("hover", function(_)
+			state.token = state.token + 1
+			if self and self._id then
+				if state.show_steps then
+					apply_update(state.token, active_cwd_sync(), "… loading …")
+				end
+				if state.debug then ya.dbg(string.format("custom-status: hover event → emit token=%d id=%s", state.token, tostring(self._id))) end
+				local argline = build_argline(state.token, state.script or "", selected_or_hovered_sync())
+				ya.emit("plugin", { self._id, argline })
+			else
+				if state.debug then ya.dbg("custom-status: hover event but no self._id; skipping async emit") end
+			end
+		end)
 	end
 
 	return self
 end
+
+-- Build an argline to emit: update TOKEN SCRIPT [FILES...]
+build_argline = function(token, script, files)
+  local parts = { "update", tostring(token), ya.quote(script or "", true) }
+  if files then
+    for _, p in ipairs(files) do
+      parts[#parts + 1] = ya.quote(tostring(p), true)
+    end
+  end
+  return table.concat(parts, " ")
+end
+
+-- Collect selected file paths, or hovered if none.
+selected_or_hovered_sync = ya.sync(function()
+  local tab = cx and cx.active
+  local list = {}
+  if tab and tab.selected then
+    for _, u in pairs(tab.selected) do
+      list[#list + 1] = tostring(u)
+    end
+  end
+  if #list == 0 and tab and tab.current and tab.current.hovered then
+    list[1] = tostring(tab.current.hovered.url)
+  end
+  return list
+end)
 
 -- Async entry point to execute the external script without blocking the UI
 local function entry(self, job)
@@ -204,9 +249,17 @@ local function entry(self, job)
 		return (s:match("^[^\r\n]*") or ""):gsub("\r", "")
 	end
 
+  -- Collect file targets from args[4..]
+  local targets = {}
+  if args then
+    for i = 4, #args do targets[#targets + 1] = args[i] end
+  end
+  if state.debug then ya.dbg(string.format("custom-status: targets=%s", tostring(#targets))) end
+
   -- Prefer a short-lived child process: grab first line then end
   local cmd = Command(script)
   if cwd ~= "" then cmd = cmd:cwd(cwd) end
+  if #targets > 0 then cmd = cmd:arg(targets) end
   local child, err = cmd
     :stdout(Command.PIPED)
     :stderr(Command.PIPED)
@@ -238,7 +291,10 @@ local function entry(self, job)
     else
       if state.debug then ya.err("custom-status: script produced no output") end
     end
-    local cmdline = string.format("%s", ya.quote(script))
+    -- Build shell command with quoted args
+    local pieces = { ya.quote(script) }
+    for _, p in ipairs(targets) do pieces[#pieces + 1] = ya.quote(p) end
+    local cmdline = table.concat(pieces, " ")
     if state.show_steps then apply_update(token, cwd, "fallback…") end
     local sh = Command("sh")
     if cwd ~= "" then sh = sh:cwd(cwd) end
