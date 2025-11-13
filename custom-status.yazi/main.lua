@@ -1,229 +1,272 @@
 --- @since 25.5.31
 
 local state = {
-  script = nil,
-  cached_cwd = nil,
-  cached_text = nil,
-  debug = true,
-  token = 0, -- increase on every request to drop stale results
-  sync = false, -- optional fallback to synchronous execution
+	script = nil,
+	cached_cwd = nil,
+	cached_text = nil,
+	debug = true,
+	token = 0, -- increase on every request to drop stale results
+	sync = false, -- optional fallback to synchronous execution
+	show_steps = true, -- show placeholder + step updates
+	timeout_ms = 2000, -- read_line timeout for async child
+	notify_error = true,
+	error_cooldown = 5,
+	_last_err_at = 0,
+	_last_err_msg = nil,
 }
 
 local function to_string(url)
-  return url and tostring(url) or ""
+	return url and tostring(url) or ""
 end
 
 -- Synchronous runner for fallback mode
 local function run_script_sync(script, cwd)
-  if not script or script == "" then return nil end
-  local cmdline = string.format("%s %s", ya.quote(script), ya.quote(cwd))
-  local handle = io.popen(cmdline .. " 2>/dev/null", "r")
-  if not handle then return nil end
-  local line = handle:read("*l") or ""
-  handle:close()
-  line = line:gsub("\r", "")
-  if line == "" then return nil end
-  return line
+	if not script or script == "" then return nil end
+	local cmdline = string.format("%s %s", ya.quote(script), ya.quote(cwd))
+	local handle = io.popen(cmdline .. " 2>/dev/null", "r")
+	if not handle then return nil end
+	local line = handle:read("*l") or ""
+	handle:close()
+	line = line:gsub("\r", "")
+	if line == "" then return nil end
+	return line
 end
 
 -- Apply a new value to the cache from async context safely
-local apply_update = ya.sync(function(st, token, cwd, text)
-  ---@cast st table
-  if token ~= st.token then
-    return
-  end
-  st.cached_cwd = cwd
-  st.cached_text = text
-  -- Debug log
-  if st.debug then ya.dbg(string.format("custom-status: applied token=%d cwd=%s text=%s", token, tostring(cwd), tostring(text))) end
-  ya.render()
+local apply_update = ya.sync(function(_, token, cwd, text)
+	if token ~= state.token then
+		return
+	end
+	state.cached_cwd = cwd
+	state.cached_text = text
+	-- Debug log
+	if state.debug then ya.dbg(string.format("custom-status: applied token=%d cwd=%s text=%s", token, tostring(cwd), tostring(text))) end
+	if ui and ui.render then ui.render() else ya.render() end
 end)
 
 -- Apply immediately in sync context (used by sync fallback)
 local function apply_now(cwd, text)
-  state.cached_cwd = cwd
-  state.cached_text = text
-  if state.debug then ya.dbg(string.format("custom-status: sync apply cwd=%s text=%s", tostring(cwd), tostring(text))) end
-  ya.render()
+	state.cached_cwd = cwd
+	state.cached_text = text
+	if state.debug then ya.dbg(string.format("custom-status: sync apply cwd=%s text=%s", tostring(cwd), tostring(text))) end
+	if ui and ui.render then ui.render() else ya.render() end
+end
+
+local function notify_error(msg)
+	if not state.notify_error then return end
+	local now = os.time()
+	if (now - (state._last_err_at or 0)) < (state.error_cooldown or 0) and state._last_err_msg == msg then
+		return
+	end
+	state._last_err_at = now
+	state._last_err_msg = msg
+	ya.notify { title = "Custom Status", content = msg, timeout = 5, level = "error" }
+end
+
+local function active_cwd_sync()
+  local ok, url = pcall(function()
+    return cx and cx.active and cx.active.current and cx.active.current.cwd
+  end)
+  return to_string(ok and url or nil)
 end
 
 local function setup(self, opts)
-  opts = opts or {}
-  -- Default script path
-  state.script = opts.script or (os.getenv("HOME") .. "/.local/bin/echos")
-  state.debug = not not opts.debug
-  state.sync = not not opts.sync
+	opts = opts or {}
+	-- Default script path
+	state.script = opts.script or (os.getenv("HOME") .. "/.local/bin/echos")
+	state.debug = not not opts.debug
+	state.sync = not not opts.sync
+	if opts.show_steps ~= nil then state.show_steps = not not opts.show_steps end
+	if opts.timeout_ms ~= nil then state.timeout_ms = tonumber(opts.timeout_ms) or state.timeout_ms end
+	if opts.notify_error ~= nil then state.notify_error = not not opts.notify_error end
+	if opts.error_cooldown ~= nil then state.error_cooldown = tonumber(opts.error_cooldown) or state.error_cooldown end
 
-  if state.debug then ya.dbg(string.format("custom-status: setup script=%s", tostring(state.script))) end
+	if state.debug then ya.dbg(string.format("custom-status: setup script=%s", tostring(state.script))) end
 
-  -- Initial run on startup
-  if state.sync then
-    local ok, url = pcall(function()
-      return cx and cx.active and cx.active.current and cx.active.current.cwd
-    end)
-    local cwd0 = to_string(ok and url or nil)
-    local line = run_script_sync(state.script, cwd0)
-    apply_now(cwd0, line)
-  else
-    state.token = state.token + 1
-    if self and self._id then
-      if state.debug then ya.dbg(string.format("custom-status: emit startup update token=%d id=%s", state.token, tostring(self._id))) end
-      ya.emit("plugin", { self._id, "update", tostring(state.token) })
-    else
-      if state.debug then ya.dbg("custom-status: no self._id at setup; skipping initial async emit") end
-    end
-  end
+	-- Initial run on startup
+	if state.sync then
+		local ok, url = pcall(function()
+			return cx and cx.active and cx.active.current and cx.active.current.cwd
+		end)
+		local cwd0 = to_string(ok and url or nil)
+		local line = run_script_sync(state.script, cwd0)
+		apply_now(cwd0, line)
+	else
+		state.token = state.token + 1
+		if self and self._id then
+			-- Placeholder: show a loading indicator before async job starts
+			if state.show_steps then
+				apply_update(state.token, active_cwd_sync(), "… loading …")
+			end
+    if state.debug then ya.dbg(string.format("custom-status: emit startup update token=%d id=%s", state.token, tostring(self._id))) end
+    local argline = string.format("update %s %s", tostring(state.token), ya.quote(state.script or "", true))
+    ya.emit("plugin", { self._id, argline })
+		else
+			if state.debug then ya.dbg("custom-status: no self._id at setup; skipping initial async emit") end
+		end
+	end
 
-  -- Register a right-aligned status child that prints cached text
-  if Status and Status.children_add then
-    Status:children_add(function()
-      local text = state.cached_text
-      if not text or text == "" then
-        return ""
-      end
-      return ui.Line { " ", ui.Span(text), " " }
-    end, opts.order or 20, Status.RIGHT)
-  end
+	-- Register a right-aligned status child that prints cached text
+	if Status and Status.children_add then
+		Status:children_add(function()
+			local text = state.cached_text
+			if not text or text == "" then
+				return ""
+			end
+			return ui.Line { " ", ui.Span(text), " " }
+		end, opts.order or 20, Status.RIGHT)
+	end
 
-  -- Refresh when CWD changes
-  if ps and ps.sub then
-    ps.sub("cd", function()
-      if state.sync then
-        local ok, url = pcall(function()
-          return cx and cx.active and cx.active.current and cx.active.current.cwd
-        end)
-        local cwd = to_string(ok and url or nil)
-        local line = run_script_sync(state.script, cwd)
-        apply_now(cwd, line)
-      else
-        state.token = state.token + 1
-        if self and self._id then
+	-- Refresh when CWD changes
+	if ps and ps.sub then
+		ps.sub("cd", function()
+			if state.sync then
+				local ok, url = pcall(function()
+					return cx and cx.active and cx.active.current and cx.active.current.cwd
+				end)
+				local cwd = to_string(ok and url or nil)
+				local line = run_script_sync(state.script, cwd)
+				apply_now(cwd, line)
+			else
+				state.token = state.token + 1
+				if self and self._id then
+					if state.show_steps then
+						apply_update(state.token, active_cwd_sync(), "… loading …")
+					end
           if state.debug then ya.dbg(string.format("custom-status: cd event → emit token=%d id=%s", state.token, tostring(self._id))) end
-          ya.emit("plugin", { self._id, "update", tostring(state.token) })
-        else
-          if state.debug then ya.dbg("custom-status: cd event but no self._id; skipping async emit") end
-        end
-      end
-    end)
-  end
+          local argline = string.format("update %s %s", tostring(state.token), ya.quote(state.script or "", true))
+          ya.emit("plugin", { self._id, argline })
+				else
+					if state.debug then ya.dbg("custom-status: cd event but no self._id; skipping async emit") end
+				end
+			end
+		end)
+	end
 
-  return self
+	return self
 end
 
 -- Async entry point to execute the external script without blocking the UI
 local function entry(self, job)
-  local args = job and job.args or {}
-  if not args or args[1] ~= "update" then
-    return
-  end
-  local token = tonumber(args[2]) or 0
-  local cwd
-  do
-    local url, _ = fs.cwd()
-    cwd = to_string(url)
-  end
-  if state.debug then ya.dbg(string.format("custom-status: entry start token=%d cwd=%s", token, tostring(cwd))) end
+	local args = job and job.args or {}
+	if not args or args[1] ~= "update" then
+		return
+	end
+	local token = tonumber(args[2]) or 0
+	-- Resolve the user's active cwd from the UI context; fs.cwd() can lag
+	local get_active_cwd = ya.sync(function()
+		return cx and cx.active and cx.active.current and cx.active.current.cwd
+	end)
+  -- Be defensive: cx may be temporarily unavailable
+  local ok, url = pcall(function()
+    return get_active_cwd()
+  end)
+  local cwd = to_string(ok and url or nil)
+	if state.debug then ya.dbg(string.format("custom-status: entry start token=%d cwd=%s", token, tostring(cwd))) end
+	if state.show_steps then apply_update(token, cwd, "start…") end
 
-  local script = state.script
+  -- Prefer script from args[3] (sent from setup), fallback to state.script
+  local function unquote(s)
+    if type(s) ~= "string" then return s end
+    s = s:match("^%s*(.-)%s*$")
+    local q = s:sub(1, 1)
+    if (q == '"' or q == "'") and s:sub(-1) == q and #s >= 2 then
+      return s:sub(2, -2)
+    end
+    return s
+  end
+  local script = unquote((args and args[3]) or state.script)
   if not script or script == "" then
-    apply_update(state, token, cwd, nil)
+    if state.show_steps then
+      apply_update(token, cwd, "no script…")
+    else
+      apply_update(token, cwd, nil)
+    end
+    return
+  end
+  if state.debug then ya.dbg(string.format("custom-status: using script=%s", tostring(script))) end
+
+  -- Validate script existence to avoid spawn errors
+  local ok_script = false
+  do
+    local cha = select(1, fs.cha(Url(script)))
+    ok_script = cha ~= nil
+  end
+  if not ok_script then
+    if state.show_steps then apply_update(token, cwd, "not found…") end
+    notify_error(string.format("custom-status script not found: %s", tostring(script)))
     return
   end
 
-  -- Run the script via Command in async context
-  local function first_line(s)
-    if not s or s == "" then return "" end
-    return (s:match("^[^\r\n]*") or ""):gsub("\r", "")
+	-- Run the script via Command in async context
+	local function first_line(s)
+		if not s or s == "" then return "" end
+		return (s:match("^[^\r\n]*") or ""):gsub("\r", "")
+	end
+
+  -- Prefer a short-lived child process: grab first line then end
+  local cmd = Command(script)
+  if cwd ~= "" then cmd = cmd:cwd(cwd) end
+  local child, err = cmd
+    :stdout(Command.PIPED)
+    :stderr(Command.PIPED)
+    :spawn()
+
+  local line
+  if child then
+    if state.show_steps then apply_update(token, cwd, "spawned…") end
+    -- Try to read one line with a timeout to avoid hanging
+    local l, ev = child:read_line_with { timeout = state.timeout_ms }
+    if ev == 0 then
+      if state.show_steps then apply_update(token, cwd, "reading…") end
+      line = first_line(l)
+    elseif ev == 3 then
+      if state.show_steps then apply_update(token, cwd, "timeout…") end
+    else
+      if state.show_steps then apply_update(token, cwd, "no data…") end
+    end
+    -- Ensure the child doesn't linger
+    child:start_kill()
+    child:wait()
   end
 
-  local output, err = Command(script)
-    :arg(cwd)
-    :stdout(Command.PIPED)
-    :stderr(Command.NULL)
-    :output()
-
-  local line = output and first_line(output.stdout) or nil
-
-  -- Fallback to shell if direct exec fails (e.g., missing shebang or not executable)
-  if (not output) or (line == nil) or (line == "") then
-    local cmdline = string.format("%s %s", ya.quote(script), ya.quote(cwd))
-    local out2, err2 = Command("sh")
+  -- Fallback to shell if direct exec fails (or produced no line)
+  if (not child) or (not line or line == "") then
+    if not child then
+      if state.debug then ya.err(string.format("custom-status: spawn failed: %s", tostring(err))) end
+      notify_error(string.format("custom-status script failed: %s", tostring(err)))
+    else
+      if state.debug then ya.err("custom-status: script produced no output") end
+    end
+    local cmdline = string.format("%s", ya.quote(script))
+    if state.show_steps then apply_update(token, cwd, "fallback…") end
+    local sh = Command("sh")
+    if cwd ~= "" then sh = sh:cwd(cwd) end
+    local out2, err2 = sh
       :arg("-c")
       :arg(cmdline)
       :stdout(Command.PIPED)
-      :stderr(Command.NULL)
+      :stderr(Command.PIPED)
       :output()
-    if not out2 then
-      if state.debug then ya.err(string.format("custom-status: failed: %s; fallback sh -c errored: %s", tostring(err), tostring(err2))) end
-      apply_update(state, token, cwd, nil)
+    if not out2 or not out2.status or not out2.status.success then
+      if state.debug then ya.err(string.format("custom-status: fallback failed: %s", tostring(err2 or (out2 and out2.stderr)))) end
+      notify_error(string.format("custom-status fallback failed: %s", tostring(err2 or (out2 and out2.stderr))))
+      apply_update(token, cwd, "failed…")
       return
     end
     line = first_line(out2.stdout)
   end
 
   if not line or line == "" then
-    apply_update(state, token, cwd, nil)
+    if state.show_steps then
+      apply_update(token, cwd, "empty…")
+    else
+      apply_update(token, cwd, nil)
+    end
     return
   end
-  if state.debug then ya.dbg(string.format("custom-status: entry done token=%d text=%s", token, tostring(line))) end
-  apply_update(state, token, cwd, line)
+	if state.debug then ya.dbg(string.format("custom-status: entry done token=%d text=%s", token, tostring(line))) end
+	apply_update(token, cwd, line)
 end
 
--- Also expose as a fetcher so it can run in async context without explicit emits
----@type UnstableFetcher
-local function fetch(_, job)
-  local base = job and job.files and job.files[1] and job.files[1].url and job.files[1].url.base
-  local cwd = to_string(base)
-  if cwd == "" then
-    return false
-  end
-  local token = state.token + 1
-  state.token = token
-  if state.debug then ya.dbg(string.format("custom-status: fetch start token=%d cwd=%s", token, tostring(cwd))) end
-
-  -- Reuse the same execution logic as in entry
-  local script = state.script
-  if not script or script == "" then
-    apply_update(state, token, cwd, nil)
-    return false
-  end
-
-  local function first_line(s)
-    if not s or s == "" then return "" end
-    return (s:match("^[^\r\n]*") or ""):gsub("\r", "")
-  end
-
-  local output, err = Command(script)
-    :arg(cwd)
-    :stdout(Command.PIPED)
-    :stderr(Command.NULL)
-    :output()
-
-  local line = output and first_line(output.stdout) or nil
-  if (not output) or (line == nil) or (line == "") then
-    local cmdline = string.format("%s %s", ya.quote(script), ya.quote(cwd))
-    local out2, err2 = Command("sh")
-      :arg("-c")
-      :arg(cmdline)
-      :stdout(Command.PIPED)
-      :stderr(Command.NULL)
-      :output()
-    if not out2 then
-      if state.debug then ya.err(string.format("custom-status: fetch fallback failed: %s", tostring(err2))) end
-      apply_update(state, token, cwd, nil)
-      return false
-    end
-    line = first_line(out2.stdout)
-  end
-
-  if not line or line == "" then
-    apply_update(state, token, cwd, nil)
-    return false
-  end
-  if state.debug then ya.dbg(string.format("custom-status: fetch done token=%d text=%s", token, tostring(line))) end
-  apply_update(state, token, cwd, line)
-
-  return false
-end
-
-return { setup = setup, entry = entry, fetch = fetch }
+return { setup = setup, entry = entry }

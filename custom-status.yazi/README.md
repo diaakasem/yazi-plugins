@@ -19,6 +19,8 @@ require("custom-status"):setup {
   -- debug = true,
   -- Optional: render order among status children (default: 20)
   -- order = 20,
+  -- Optional: async read timeout in ms (default: 2000)
+  -- timeout_ms = 2000,
   -- Optional: synchronous fallback (blocks briefly on cd)
   -- sync = false,
 }
@@ -31,6 +33,7 @@ require("custom-status"):setup {
 - Uses only the first line of stdout.
 - Non‑zero exit, empty output, or missing script hides the segment.
 - Stale results are dropped if a newer CWD change occurs.
+ - Uses `ui.render()` when available.
 
 ## Notes
 
