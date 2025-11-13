@@ -1,9 +1,10 @@
 # custom-status.yazi
 
-Append a custom, right-aligned segment to Yazi's status bar.
+Append a custom, right‑aligned segment to Yazi’s status bar.
 
-Runs a shell script with the current working directory as the only argument and
-renders its stdout at the far right of the status bar.
+This plugin executes your script asynchronously whenever the CWD changes and
+renders the first line of its stdout at the far right of the status bar. It
+does not block the UI.
 
 ## Install
 
@@ -14,18 +15,25 @@ Enable it in `init.lua`:
 require("custom-status"):setup {
   -- Optional: override the script path
   -- script = os.getenv("HOME") .. "/.loc/bin/echos.sh",
+  -- Optional: debug logging (default: false)
+  -- debug = true,
+  -- Optional: render order among status children (default: 20)
+  -- order = 20,
+  -- Optional: synchronous fallback (blocks briefly on cd)
+  -- sync = false,
 }
 ```
 
 ## Behavior
 
-- Calls your script whenever the CWD changes.
+- Triggers an async job on startup and on every CWD change.
 - Passes the current working directory as the only argument.
 - Uses only the first line of stdout.
-- Non‑zero exit or missing script results in no extra segment.
+- Non‑zero exit, empty output, or missing script hides the segment.
+- Stale results are dropped if a newer CWD change occurs.
 
 ## Notes
 
-- Right alignment is handled via `ui.Text(...):align(ui.Align.RIGHT)`.
-- Styling inherits the status bar style; customize via `theme.toml` if needed.
-
+- The `script` must be an executable path, not a shell pipeline.
+- Styling inherits the status bar style; customize via `theme.toml`.
+- Logs go to Yazi’s log file when `debug = true`.
