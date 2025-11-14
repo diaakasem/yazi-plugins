@@ -17,6 +17,8 @@ require("custom-status"):setup {
   -- script = os.getenv("HOME") .. "/.loc/bin/echos.sh",
   -- Optional: debug logging (default: false)
   -- debug = true,
+  -- Optional: per‑CWD cache; show 0/0 until first value, then reuse last value while recomputing (default: false)
+  -- use_cache = true,
   -- Optional: render order among status children (default: 20)
   -- order = 20,
   -- Optional: async read timeout in ms (default: 2000)

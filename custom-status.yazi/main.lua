@@ -4,13 +4,15 @@ local state = {
 	script = nil,
 	cached_cwd = nil,
 	cached_text = nil,
+	cwd_cache = {}, -- per-cwd last successful value
 	debug = true,
 	token = 0, -- increase on every request to drop stale results
 	sync = false, -- optional fallback to synchronous execution
-	show_steps = true, -- show placeholder + step updates
+	show_steps = false, -- show placeholder + step updates
 	timeout_ms = 2000, -- read_line timeout for async child
 	notify_error = true,
 	error_cooldown = 5,
+	use_cache = false, -- optional per-path cache (async)
 	_last_err_at = 0,
 	_last_err_msg = nil,
 }
@@ -36,7 +38,6 @@ local function run_script_sync(script, cwd)
 	return line
 end
 
--- Apply a new value to the cache from async context safely
 local apply_update = ya.sync(function(_, token, cwd, text)
 	if token ~= state.token then
 		return
@@ -52,6 +53,9 @@ end)
 local function apply_now(cwd, text)
 	state.cached_cwd = cwd
 	state.cached_text = text
+	if state.use_cache and cwd and cwd ~= "" and text and text ~= "" then
+		state.cwd_cache[cwd] = text
+	end
 	if state.debug then ya.dbg(string.format("custom-status: sync apply cwd=%s text=%s", tostring(cwd), tostring(text))) end
 	if ui and ui.render then ui.render() else ya.render() end
 end
@@ -80,6 +84,7 @@ local function setup(self, opts)
 	state.script = opts.script or (os.getenv("HOME") .. "/.local/bin/echos")
 	state.debug = not not opts.debug
 	state.sync = not not opts.sync
+	if opts.use_cache ~= nil then state.use_cache = not not opts.use_cache end
 	if opts.show_steps ~= nil then state.show_steps = not not opts.show_steps end
 	if opts.timeout_ms ~= nil then state.timeout_ms = tonumber(opts.timeout_ms) or state.timeout_ms end
 	if opts.notify_error ~= nil then state.notify_error = not not opts.notify_error end
@@ -98,13 +103,20 @@ local function setup(self, opts)
 	else
 		state.token = state.token + 1
 		if self and self._id then
-			-- Placeholder: show a loading indicator before async job starts
-			if state.show_steps then
-				apply_update(state.token, active_cwd_sync(), "… loading …")
+			local cwd0 = active_cwd_sync()
+			-- Placeholder: either cached value for this cwd or 0/0, unless caching disabled
+			local placeholder
+			if state.use_cache then
+				placeholder = state.cwd_cache[cwd0] or "0/0"
+			elseif state.show_steps then
+				placeholder = "… loading …"
 			end
-    if state.debug then ya.dbg(string.format("custom-status: emit startup update token=%d id=%s", state.token, tostring(self._id))) end
-    local argline = build_argline(state.token, state.script or "", selected_or_hovered_sync())
-    ya.emit("plugin", { self._id, argline })
+			if placeholder ~= nil then
+				apply_update(state.token, cwd0, placeholder)
+			end
+			if state.debug then ya.dbg(string.format("custom-status: emit startup update token=%d id=%s", state.token, tostring(self._id))) end
+			local argline = build_argline(state.token, state.script or "", selected_or_hovered_sync())
+			ya.emit("plugin", { self._id, argline })
 		else
 			if state.debug then ya.dbg("custom-status: no self._id at setup; skipping initial async emit") end
 		end
@@ -134,12 +146,19 @@ local function setup(self, opts)
 			else
 				state.token = state.token + 1
 				if self and self._id then
-					if state.show_steps then
-						apply_update(state.token, active_cwd_sync(), "… loading …")
+					local cwd = active_cwd_sync()
+					local placeholder
+					if state.use_cache then
+						placeholder = state.cwd_cache[cwd] or "0/0"
+					elseif state.show_steps then
+						placeholder = "… loading …"
 					end
-          if state.debug then ya.dbg(string.format("custom-status: cd event → emit token=%d id=%s", state.token, tostring(self._id))) end
-          local argline = build_argline(state.token, state.script or "", selected_or_hovered_sync())
-          ya.emit("plugin", { self._id, argline })
+					if placeholder ~= nil then
+						apply_update(state.token, cwd, placeholder)
+					end
+					if state.debug then ya.dbg(string.format("custom-status: cd event → emit token=%d id=%s", state.token, tostring(self._id))) end
+					local argline = build_argline(state.token, state.script or "", selected_or_hovered_sync())
+					ya.emit("plugin", { self._id, argline })
 				else
 					if state.debug then ya.dbg("custom-status: cd event but no self._id; skipping async emit") end
 				end
@@ -150,8 +169,15 @@ local function setup(self, opts)
 		ps.sub("hover", function(_)
 			state.token = state.token + 1
 			if self and self._id then
-				if state.show_steps then
-					apply_update(state.token, active_cwd_sync(), "… loading …")
+				local cwd = active_cwd_sync()
+				local placeholder
+				if state.use_cache then
+					placeholder = state.cwd_cache[cwd] or "0/0"
+				elseif state.show_steps then
+					placeholder = "… loading …"
+				end
+				if placeholder ~= nil then
+					apply_update(state.token, cwd, placeholder)
 				end
 				if state.debug then ya.dbg(string.format("custom-status: hover event → emit token=%d id=%s", state.token, tostring(self._id))) end
 				local argline = build_argline(state.token, state.script or "", selected_or_hovered_sync())
@@ -208,7 +234,7 @@ local function entry(self, job)
   end)
   local cwd = to_string(ok and url or nil)
 	if state.debug then ya.dbg(string.format("custom-status: entry start token=%d cwd=%s", token, tostring(cwd))) end
-	if state.show_steps then apply_update(token, cwd, "start…") end
+	if state.show_steps and not state.use_cache then apply_update(token, cwd, "start…") end
 
   -- Prefer script from args[3] (sent from setup), fallback to state.script
   local function unquote(s)
@@ -222,10 +248,12 @@ local function entry(self, job)
   end
   local script = unquote((args and args[3]) or state.script)
   if not script or script == "" then
-    if state.show_steps then
-      apply_update(token, cwd, "no script…")
-    else
-      apply_update(token, cwd, nil)
+    if not state.use_cache then
+      if state.show_steps then
+        apply_update(token, cwd, "no script…")
+      else
+        apply_update(token, cwd, nil)
+      end
     end
     return
   end
@@ -238,7 +266,7 @@ local function entry(self, job)
     ok_script = cha ~= nil
   end
   if not ok_script then
-    if state.show_steps then apply_update(token, cwd, "not found…") end
+    if state.show_steps and not state.use_cache then apply_update(token, cwd, "not found…") end
     notify_error(string.format("custom-status script not found: %s", tostring(script)))
     return
   end
@@ -267,16 +295,16 @@ local function entry(self, job)
 
   local line
   if child then
-    if state.show_steps then apply_update(token, cwd, "spawned…") end
+    if state.show_steps and not state.use_cache then apply_update(token, cwd, "spawned…") end
     -- Try to read one line with a timeout to avoid hanging
     local l, ev = child:read_line_with { timeout = state.timeout_ms }
     if ev == 0 then
-      if state.show_steps then apply_update(token, cwd, "reading…") end
+      if state.show_steps and not state.use_cache then apply_update(token, cwd, "reading…") end
       line = first_line(l)
     elseif ev == 3 then
-      if state.show_steps then apply_update(token, cwd, "timeout…") end
+      if state.show_steps and not state.use_cache then apply_update(token, cwd, "timeout…") end
     else
-      if state.show_steps then apply_update(token, cwd, "no data…") end
+      if state.show_steps and not state.use_cache then apply_update(token, cwd, "no data…") end
     end
     -- Ensure the child doesn't linger
     child:start_kill()
@@ -295,7 +323,7 @@ local function entry(self, job)
     local pieces = { ya.quote(script) }
     for _, p in ipairs(targets) do pieces[#pieces + 1] = ya.quote(p) end
     local cmdline = table.concat(pieces, " ")
-    if state.show_steps then apply_update(token, cwd, "fallback…") end
+    if state.show_steps and not state.use_cache then apply_update(token, cwd, "fallback…") end
     local sh = Command("sh")
     if cwd ~= "" then sh = sh:cwd(cwd) end
     local out2, err2 = sh
@@ -307,21 +335,28 @@ local function entry(self, job)
     if not out2 or not out2.status or not out2.status.success then
       if state.debug then ya.err(string.format("custom-status: fallback failed: %s", tostring(err2 or (out2 and out2.stderr)))) end
       notify_error(string.format("custom-status fallback failed: %s", tostring(err2 or (out2 and out2.stderr))))
-      apply_update(token, cwd, "failed…")
+      if not state.use_cache then
+        apply_update(token, cwd, "failed…")
+      end
       return
     end
     line = first_line(out2.stdout)
   end
 
   if not line or line == "" then
-    if state.show_steps then
-      apply_update(token, cwd, "empty…")
-    else
-      apply_update(token, cwd, nil)
+    if not state.use_cache then
+      if state.show_steps then
+        apply_update(token, cwd, "empty…")
+      else
+        apply_update(token, cwd, nil)
+      end
     end
     return
   end
 	if state.debug then ya.dbg(string.format("custom-status: entry done token=%d text=%s", token, tostring(line))) end
+	if state.use_cache and cwd and cwd ~= "" and line and line ~= "" then
+		state.cwd_cache[cwd] = line
+	end
 	apply_update(token, cwd, line)
 end
 
